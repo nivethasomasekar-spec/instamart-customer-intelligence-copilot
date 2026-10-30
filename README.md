@@ -46,7 +46,73 @@ python validate_part_d.py
 
 # Part A
 
-*Data foundation, raw audit findings, cleaning rules, SQLite database export, validation checks, and SQL/pandas analytics will be documented here.*
+### Data Foundation (Tasks 1–7)
+
+#### Task 1: Project Setup
+Raw CSV datasets (`customers.csv`, `products.csv`, `orders.csv`) and policy documents were generated using `generate_data.py` and stored under `data/raw/`. A `requirements.txt` file pins all permitted dependencies (pandas, numpy, scikit-learn, joblib).
+
+#### Task 2: Raw Data Audit (`audit_raw.py`)
+All three raw tables were inspected for shape, data types, missing values, and data quality issues. The 12 official audit reference metrics were verified and all matched exactly:
+
+| Audit Metric | Found | Reference |
+|---|:---:|:---:|
+| Raw `orders.csv` rows | 13,084 | 13,084 |
+| Exact duplicate rows | 119 | 119 |
+| Pending-status rows (to remove) | 656 | 656 |
+| Distinct `order_id` values | 12,309 | 12,309 |
+| Non-numeric `order_amount` entries | 120 | 120 |
+| Negative `delivery_minutes` entries | 106 | 106 |
+| Blank `delivery_minutes` values | 2,541 | 2,541 |
+| Customers with blank age | 61 | 61 |
+| Customers with age outside 10–100 | 6 | 6 |
+| Distinct raw city spellings | 24 | 24 |
+| Distinct non-blank gender spellings | 10 | 10 |
+| Customers with blank gender | 30 | 30 |
+
+**Findings:** The raw orders table had 775 rows removed (119 duplicate rows + 656 pending-status rows) and 2,767 corrupt values fixed (120 non-numeric order amounts, 106 negative delivery times, and 2,541 missing delivery minutes requiring imputation). The customers table had 91 records requiring age or gender correction (61 blank ages, 6 out-of-range ages, 30 blank genders).
+
+#### Task 3: Customer Data Cleaning (`clean_data.py`)
+Cleaning rules applied to `customers.csv`:
+- **City standardisation:** Strip whitespace and apply title case to collapse 24 raw spellings into 6 canonical city names (Pune: 227, Delhi: 210, Bengaluru: 197, Chennai: 191, Hyderabad: 191, Mumbai: 184).
+- **Gender standardisation:** Map all variant spellings (M, Male, m, F, Female, f, etc.) to `male`, `female`, or `unknown` (female: 610, male: 560, unknown: 30).
+- **Age cleaning:** Treat ages outside the range [10, 100] as missing; impute all 67 missing ages using the median age of the customer's own city group.
+- **Result:** 1,200 customers, 5 columns, zero missing values. All ages within [18, 60].
+
+#### Task 4: Order Data Cleaning (`clean_data.py`)
+Cleaning rules applied to `orders.csv` in strict sequence:
+1. **Timestamp parsing:** Convert `order_ts` to datetime.
+2. **Duplicate removal:** Drop 119 exact duplicate rows.
+3. **Order-ID deduplication:** Keep only the latest record per `order_id` (removed 656 pending-status rows), leaving 12,309 unique orders.
+4. **Order amount repair:** Convert `order_amount` to numeric; impute 120 missing/corrupted values using `price_inr × quantity × (1 − discount_pct / 100)`.
+5. **Delivery time repair:** Set 106 negative `delivery_minutes` to missing; impute missing values for **completed** orders using the product-category-level median; leave cancelled orders as missing by design.
+- **Result:** 12,309 orders (11,110 completed, 1,199 cancelled, 0 pending), zero missing `order_amount`, zero missing `delivery_minutes` for completed orders. Total completed revenue: **INR 2,998,668.80**.
+
+#### Task 5: Validation (`validate_part_a.py`)
+All 8 official reference checkpoints verified and passed:
+- Cleaned shapes: Customers (1,200 × 5), Products (40 × 4), Orders (12,309 × 9).
+- Completed revenue sum: INR 2,998,668.80 (exact match).
+- SQLite tables (`customers`, `products`, `orders`) row counts: 1,200 / 40 / 12,309.
+- Timestamp format in SQLite: `YYYY-MM-DD HH:MM:SS` (19-character string).
+- **Output:** `ALL CHECKPOINTS PASSED`
+
+#### Task 6: SQL Analysis (`run_sql_analysis.py`, `sql/queries.sql`)
+Seven SQL queries executed against `data/instamart.db` using `pandas.read_sql_query`. All reference checkpoints passed:
+
+| Query | Description | Key Result |
+|:---:|---|---|
+| Q1 | WHERE + HAVING filter | 30 customers with high-value basket spend > INR 8,000 |
+| Q2 | 3-Table JOIN (City × Category Revenue) | 30 rows; total INR 2,998,668.80; max cell: Bengaluru / Electronics INR 233,909.45 |
+| Q3 | Scalar subquery (above-average product price) | 11 products priced above catalogue average |
+| Q4 | LEFT JOIN (customers with no completed orders) | 25 customers |
+| Q5 | CTE (above-average total spenders) | 550 customers; average spend INR 2,552.06 |
+| Q6 | Window functions RANK / DENSE_RANK / ROW_NUMBER | City leaderboards verified; 8 rows where RANK ≠ ROW_NUMBER (ties) |
+| Q7 | Running total (daily revenue) | 183 daily rows; final cumulative revenue INR 2,998,668.80 |
+
+#### Task 7: Pandas EDA (`eda_analysis.py`)
+- **Q2 Cross-check:** `pivot_table()` grand total matched SQL grand total exactly (INR 2,998,668.80).
+- **City-level aggregations verified:** Bengaluru (sum INR 523,643.40, mean INR 276.47, count 1,894 orders); Mumbai (sum INR 479,058.50, mean INR 297.00, count 1,613 orders).
+- **Order amount distribution:** Mean INR 269.91, Median INR 135.00, Skewness 4.61 (heavy right skew). Q1 = INR 64.80, Q3 = INR 297.00, IQR = INR 232.20. Upper 1.5×IQR fence = INR 645.30. Outliers above fence: **897 orders** (mainly high-value electronics); outliers below: 0.
+- **Correlation analysis:** Strongest linear correlation is `order_amount` vs. `discount_pct` (r ≈ −0.095); second is `order_amount` vs. `quantity` (r ≈ +0.087). All correlations are negligible in magnitude.
 
 # Part B
 
@@ -58,10 +124,10 @@ python validate_part_d.py
 - **K-Means Clustering:** Evaluated K=2 through 8; K=4 was chosen based on the elbow method, peak silhouette score (0.526), and business interpretability.
 - **PCA Analysis:** 2 components capture 85.2% of total RFM variance (PC1: 63.4%, PC2: 21.8%).
 - **Customer Segments (K=4):**
-  - **Frequent Daily Shoppers (419 customers):** Mean Recency 8.8 days, Mean Frequency 19.4 orders, Mean Spend INR 3,101.99. Action: Loyalty rewards and subscription plans.
-  - **High-Value/Premium Buyers (138 customers, `is_premium=True`):** Mean Recency 27.2 days, Mean Frequency 6.8 orders, Mean Spend INR 7,130.40. Action: White-glove concierge support and high-ticket category promotions.
-  - **Occasional Grocery Buyers (436 customers):** Mean Recency 22.8 days, Mean Frequency 3.1 orders, Mean Spend INR 884.28. Action: Minimum basket discount coupons to boost frequency.
-  - **At-Risk/Dormant Shoppers (182 customers):** Mean Recency 86.6 days, Mean Frequency 3.7 orders, Mean Spend INR 1,768.49. Action: Re-engagement discounts and win-back notifications.
+  - **Frequent Daily Shoppers (419 customers):** Mean Recency 8.77 days, Mean Frequency 19.40 orders, Mean Spend INR 3,410.02. Action: Promote daily essentials subscription streaks and category cross-selling coupons.
+  - **High-Value/Premium Buyers (138 customers, `is_premium=True`):** Mean Recency 24.12 days, Mean Frequency 6.77 orders, Mean Spend INR 7,129.70. Action: Assign VIP support desk routing and early access to high-margin electronics.
+  - **Occasional Grocery Buyers (436 customers):** Mean Recency 28.86 days, Mean Frequency 3.77 orders, Mean Spend INR 1,057.62. Action: Send weekend promotional bundles and minimum-order free delivery nudges.
+  - **At-Risk/Dormant Shoppers (182 customers):** Mean Recency 109.04 days, Mean Frequency 2.20 orders, Mean Spend INR 685.99. Action: Trigger targeted win-back notifications with steep reactivation discounts.
 
 ### Customer Lapse Prediction (Tasks 4-8)
 - **Cutoff Date & Cohort:** 2025-09-01 00:00:00. 1,156 eligible customers who placed at least one completed order before the cutoff.
